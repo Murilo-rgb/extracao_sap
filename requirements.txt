@@ -1,0 +1,5 @@
+pandas
+psutil
+pywin32
+pywinauto
+pyinstaller

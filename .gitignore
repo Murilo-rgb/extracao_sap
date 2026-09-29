@@ -1,0 +1,12 @@
+# credenciais - NUNCA commitar
+.env
+
+# python / venv
+venv/
+__pycache__/
+*.pyc
+build/
+
+# executaveis vao via Release, nao no push
+*.exe
+dist/
