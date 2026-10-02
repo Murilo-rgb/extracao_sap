@@ -62,31 +62,44 @@ sap_password = _require_env("SAP_PASSWORD")
 # quando a conexao nao traz o mandante pre-definido (ex.: SAP_CLIENT=300)
 sap_client = os.environ.get("SAP_CLIENT", "").strip()
 
+TARGET_YEAR_TEXT = "2026"
+
+# Pasta de saida dos .txt extraidos do SAP (o SAP NAO cria a pasta - o script cria)
+OUTPUT_DIR = os.environ.get("SAP_OUTPUT_DIR", r"C:\Automat").strip()
+
+# Diagnostico: grava <OUTPUT_DIR>\_tree_<segmento>.txt com TODOS os nos lidos
+# da arvore "Variacao: Exercicio" (key + texto). Use DUMP_TREE=1 no .env para ligar.
+DUMP_TREE = os.environ.get("DUMP_TREE", "").strip().lower() in ("1", "true", "yes", "sim", "on")
+
+# Piloto: limita quantos segmentos rodar (vazio/0 = todos os 25).
+_seg_limit = os.environ.get("SEGMENT_LIMIT", "").strip()
+SEGMENT_LIMIT = int(_seg_limit) if _seg_limit.isdigit() else 0
+
 segments_to_extract = [
-    ("77699AAA", "77699ZZZ", "000003"),
-    ("77698AAA", "77698ZZZ", "000003"),
-    ("78220AAA", "78220ZZZ", "000003"),
-    ("77855AAA", "77855ZZZ", "000003"),
-    ("65745AAA", "65745ZZZ", "000008"),
-    ("73834AAA", "73834ZZZ", "000005"),
-    ("76541AAA", "76541ZZZ", "000004"),
-    ("74085AAA", "74085ZZZ", "000005"),
-    ("78484AAA", "78484ZZZ", "000003"),
-    ("79683AAA", "79683ZZZ", "000002"),
-    ("79535AAA", "79535ZZZ", "000002"),
-    ("79982AAA", "79982ZZZ", "000002"),
-    ("79819AAA", "79819ZZZ", "000002"),
-    ("71575AAA", "71575ZZZ", "000003"),
-    ("76710AAA", "76710ZZZ", "000003"),
-    ("77682AAA", "77682ZZZ", "000003"),
-    ("77194AAA", "77194ZZZ", "000003"),
-    ("77696AAA", "77696ZZZ", "000003"),
-    ("78586AAA", "78586ZZZ", "000003"),
-    ("78587AAA", "78587ZZZ", "000003"),
-    ("100386AAA", "100386ZZZ", "000003"),
-    ("77605AAA", "77605ZZZ", "000003"),
-    ("67972AAA", "67972ZZZ", "000003"),
-    ("79501AAA", "79501ZZZ", "000003"),
+    ("77699AAA", "77699ZZZ"),
+    ("77698AAA", "77698ZZZ"),
+    ("78220AAA", "78220ZZZ"),
+    ("77855AAA", "77855ZZZ"),
+    ("65745AAA", "65745ZZZ"),
+    ("73834AAA", "73834ZZZ"),
+    ("76541AAA", "76541ZZZ"),
+    ("74085AAA", "74085ZZZ"),
+    ("78484AAA", "78484ZZZ"),
+    ("79683AAA", "79683ZZZ"),
+    ("79535AAA", "79535ZZZ"),
+    ("79982AAA", "79982ZZZ"),
+    ("79819AAA", "79819ZZZ"),
+    ("71575AAA", "71575ZZZ"),
+    ("76710AAA", "76710ZZZ"),
+    ("77682AAA", "77682ZZZ"),
+    ("77194AAA", "77194ZZZ"),
+    ("77696AAA", "77696ZZZ"),
+    ("78586AAA", "78586ZZZ"),
+    ("78587AAA", "78587ZZZ"),
+    ("100386AAA", "100386ZZZ"),
+    ("77605AAA", "77605ZZZ"),
+    ("67972AAA", "67972ZZZ"),
+    ("79501AAA", "79501ZZZ"),
 ]
 
 
@@ -481,7 +494,22 @@ def run_vbs(code, timeout=30, capture=False, encoding="utf-8"):
         os.remove(tmp_path)
 
 
-def generate_vbs_code(segment_start, segment_end, node_id):
+def generate_vbs_code(segment_start, segment_end, year_text=TARGET_YEAR_TEXT):
+    # Caminho de saida com barra final (o SAP espera "C:\Automat\")
+    output_dir = OUTPUT_DIR if OUTPUT_DIR.endswith("\\") else OUTPUT_DIR + "\\"
+
+    # Bloco opcional que grava o dump da arvore lida (diagnostico DUMP_TREE=1)
+    dump_block = ""
+    if DUMP_TREE:
+        dump_block = (
+            "On Error Resume Next\n"
+            'Set fso = CreateObject("Scripting.FileSystemObject")\n'
+            f'Set f = fso.CreateTextFile("{output_dir}_tree_{segment_start}_{segment_end}.txt", True)\n'
+            "f.Write dumpLines\n"
+            "f.Close\n"
+            "On Error GoTo 0\n"
+        )
+
     vbs_script = fr"""
 If Not IsObject(application) Then
    Set SapGuiAuto  = GetObject("SAPGUI")
@@ -506,20 +534,38 @@ session.findById("wnd[0]/usr/ctxt_6ORDGRP-HIGH").text = "{segment_end}"
 session.findById("wnd[0]/usr/ctxt_6ORDGRP-HIGH").setFocus
 session.findById("wnd[0]/usr/ctxt_6ORDGRP-HIGH").caretPosition = 8
 session.findById("wnd[0]/tbar[1]/btn[8]").press
-' Expande o nó pai, assumindo que "000001" é a pasta "1-S-GJAHR-BUD-ALL Orçamento global"
-On Error Resume Next ' Ignora erros se o nó não for uma pasta ou não existir
+WScript.Sleep 500
+' Seleciona a pasta do ano pelo TEXTO (ex: "2026 2026") e nao pelo ID fixo,
+' pois o ID (000002/000003/000004/...) muda de posicao conforme o projeto.
+On Error Resume Next
 Set shell = session.findById("wnd[0]/shellcont/shell/shellcont[2]/shell")
+' Expande a pasta raiz para revelar os anos filhos (ignora erro se nao for pasta)
 shell.expandNode "000001"
-WScript.Sleep 200 ' Pequeno atraso para a expansão ser concluída
-On Error GoTo 0 ' Reativa a manipulação de erros
-
-' Seleção direta do nó com base no ID fornecido
-shell.selectedNode = "{node_id}"
-WScript.Sleep 100 ' Pequeno atraso para a interface atualizar
+WScript.Sleep 300
+' Varre TODOS os nos da arvore (GetAllNodeKeys) e le o texto de cada um
+targetKey = ""
+targetText = ""
+dumpLines = ""
+Set allKeys = shell.GetAllNodeKeys
+For i = 0 To allKeys.Count - 1
+    nodeKey = allKeys.ElementAt(i)
+    nodeText = shell.GetNodeTextByKey(nodeKey)
+    dumpLines = dumpLines & nodeKey & vbTab & nodeText & vbCrLf
+    If targetKey = "" And InStr(1, nodeText, "{year_text}", 1) > 0 Then
+        targetKey = nodeKey
+        targetText = nodeText
+    End If
+Next
+On Error GoTo 0
+{dump_block}If targetKey = "" Then
+    Err.Raise 9999, "SAP_EXTRACT", "Pasta do ano {year_text} nao encontrada na arvore Variacao: Exercicio (segmento {segment_start}-{segment_end})."
+End If
+shell.selectedNode = targetKey
+WScript.Sleep 200
 
 session.findById("wnd[0]/mbar/menu[6]/menu[5]/menu[2]/menu[2]").select
 session.findById("wnd[1]/tbar[0]/btn[0]").press
-session.findById("wnd[1]/usr/ctxtDY_PATH").text = "C:\Automat\"
+session.findById("wnd[1]/usr/ctxtDY_PATH").text = "{output_dir}"
 session.findById("wnd[1]/usr/ctxtDY_FILENAME").text = "{segment_start}_{segment_end}.txt"
 session.findById("wnd[1]/usr/ctxtDY_FILENAME").caretPosition = 9
 session.findById("wnd[1]/tbar[0]/btn[11]").press
@@ -528,6 +574,12 @@ session.findById("wnd[1]/tbar[0]/btn[11]").press
 
 
 if __name__ == "__main__":
+    # Garante a pasta de saida ANTES de extrair (o SAP nao cria a pasta sozinho)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"Pasta de saida: {OUTPUT_DIR}")
+    if DUMP_TREE:
+        print("Diagnostico DUMP_TREE=1: a arvore lida de cada segmento sera gravada "
+              f"em {OUTPUT_DIR}\\_tree_<segmento>.txt")
     # Executar
     iniciar_watchdog_seguranca()
     session = obter_sessao()
@@ -585,10 +637,15 @@ On Error GoTo 0
                   "preencha a mao ou adicione SAP_CLIENT=300 no .env")
         run_vbs(login_vbs_code.format(sap_user=sap_user, sap_password=sap_password), timeout=30)
 
-    for start, end, node_id in segments_to_extract:
-        print(f"Extraindo dados para os segmentos: {start} - {end}, Nó: {node_id}")
-        current_vbs_code = generate_vbs_code(start, end, node_id)
-        run_vbs(current_vbs_code, timeout=30)
+    segmentos = segments_to_extract[:SEGMENT_LIMIT] if SEGMENT_LIMIT > 0 else segments_to_extract
+    if SEGMENT_LIMIT > 0:
+        print(f"Piloto SEGMENT_LIMIT={SEGMENT_LIMIT}: rodando apenas {len(segmentos)} de "
+              f"{len(segments_to_extract)} segmentos.")
+    for start, end in segmentos:
+        print(f"Extraindo dados para os segmentos: {start} - {end}, Ano: {TARGET_YEAR_TEXT}")
+        current_vbs_code = generate_vbs_code(start, end, TARGET_YEAR_TEXT)
+        # capture=True: mostra/loga o erro do VBScript sem derrubar o programa inteiro
+        run_vbs(current_vbs_code, timeout=60, capture=True)
         # Comando para resetar a tela do SAP após a extração
         reset_vbs_code = fr"""
     If Not IsObject(application) Then
